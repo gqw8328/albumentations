@@ -3,7 +3,7 @@ from __future__ import division
 import math
 from functools import wraps
 from warnings import warn
-
+from itertools import product
 import cv2
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
@@ -1022,7 +1022,7 @@ def optical_distortion(
     height, width = img.shape[:2]
 
     fx = width
-    fy = width
+    fy = height
 
     cx = width * 0.5 + dx
     cy = height * 0.5 + dy
@@ -1250,10 +1250,9 @@ def channel_dropout(img, channels_to_drop, fill_value=0):
 
 
 @preserve_shape
-def gamma_transform(img, gamma, eps=1e-7):
+def gamma_transform(img, gamma):
     if img.dtype == np.uint8:
-        invGamma = 1.0 / (gamma + eps)
-        table = (np.arange(0, 256.0 / 255, 1.0 / 255) ** invGamma) * 255
+        table = (np.arange(0, 256.0 / 255, 1.0 / 255) ** gamma) * 255
         img = cv2.LUT(img, table.astype(np.uint8))
     else:
         img = np.power(img, gamma)
@@ -1964,3 +1963,36 @@ def fancy_pca(img, alpha=0.1):
     orig_img = orig_img.astype(np.uint8)
 
     return orig_img
+
+
+@clipped
+def glass_blur(img, sigma, max_delta, iterations, dxy, mode):
+    coef = MAX_VALUES_BY_DTYPE[img.dtype]
+    x = np.uint8(cv2.GaussianBlur(np.array(img) / coef, sigmaX=sigma, ksize=(0, 0)) * coef)
+
+    if mode == "fast":
+
+        hs = np.arange(img.shape[0] - max_delta, max_delta, -1)
+        ws = np.arange(img.shape[1] - max_delta, max_delta, -1)
+        h = np.tile(hs, ws.shape[0])
+        w = np.repeat(ws, hs.shape[0])
+
+        for i in range(iterations):
+            dy = dxy[:, i, 0]
+            dx = dxy[:, i, 1]
+            x[h, w], x[h + dy, w + dx] = x[h + dy, w + dx], x[h, w]
+
+    elif mode == "exact":
+        for ind, (i, h, w) in enumerate(
+            product(
+                range(iterations),
+                range(img.shape[0] - max_delta, max_delta, -1),
+                range(img.shape[1] - max_delta, max_delta, -1),
+            )
+        ):
+            ind = ind if ind < len(dxy) else ind % len(dxy)
+            dy = dxy[ind, i, 0]
+            dx = dxy[ind, i, 1]
+            x[h, w], x[h + dy, w + dx] = x[h + dy, w + dx], x[h, w]
+
+    return np.clip(cv2.GaussianBlur(x / coef, sigmaX=sigma, ksize=(0, 0)), 0, 1) * coef
